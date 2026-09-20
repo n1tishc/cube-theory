@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+.DS_Store
+
+# Local product/design planning and generated review artifacts
+.impeccable/
+docs/
+DESIGN.md
+PRODUCT.md
+cube-graph-solver-plan.md
+regions.json
