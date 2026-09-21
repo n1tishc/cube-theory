@@ -1,4 +1,4 @@
-@import '../.impeccable/build/scaffold/layout.css';
+@import './scaffold.css';
 
 :root {
   color: #141415;

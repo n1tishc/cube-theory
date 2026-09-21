@@ -1,0 +1,32 @@
+/* Measured layout tokens retained in source so production builds are self-contained. */
+:root {
+  --r-paper-x: 0.000%; --r-paper-y: 70.000%; --r-paper-w: 10.000%; --r-paper-h: 10.000%;
+  --r-masthead-x: 0.760%; --r-masthead-y: 0.600%; --r-masthead-w: 29.260%; --r-masthead-h: 9.380%;
+  --r-masthead-cap: 31px; --r-masthead-font: 44px; --r-masthead-family: 'Noto Serif Tibetan'; --r-masthead-weight: 300;
+  --r-size-readout-x: 39.970%; --r-size-readout-y: 0.600%; --r-size-readout-w: 19.990%; --r-size-readout-h: 8.470%;
+  --r-move-r-x: 80.010%; --r-move-r-y: 0.600%; --r-move-r-w: 10.030%; --r-move-r-h: 8.470%;
+  --r-move-u-x: 80.010%; --r-move-u-y: 0.600%; --r-move-u-w: 19.670%; --r-move-u-h: 9.380%;
+  --r-move-f-x: 89.970%; --r-move-f-y: 0.600%; --r-move-f-w: 9.460%; --r-move-f-h: 9.380%;
+  --r-physical-label-x: 3.400%; --r-physical-label-y: 11.190%; --r-physical-label-w: 8.700%; --r-physical-label-h: 4.230%;
+  --r-physical-label-cap: 14px; --r-physical-label-font: 21px;
+  --r-permutation-label-x: 36.820%; --r-permutation-label-y: 10.580%; --r-permutation-label-w: 12.860%; --r-permutation-label-h: 4.840%;
+  --r-permutation-label-cap: 14px; --r-permutation-label-font: 20px;
+  --r-cube-viewport-x: 0.000%; --r-cube-viewport-y: 20.000%; --r-cube-viewport-w: 40.000%; --r-cube-viewport-h: 60.000%;
+  --r-ring-viewport-x: 30.000%; --r-ring-viewport-y: 10.000%; --r-ring-viewport-w: 70.000%; --r-ring-viewport-h: 70.000%;
+  --r-active-trace-x: 20.000%; --r-active-trace-y: 20.000%; --r-active-trace-w: 30.000%; --r-active-trace-h: 30.000%;
+  --r-timeline-x: 0.000%; --r-timeline-y: 80.000%; --r-timeline-w: 100.000%; --r-timeline-h: 20.000%;
+}
+
+.comp-frame { position: relative; width: 100%; aspect-ratio: 1586 / 992; overflow: hidden; }
+.r-paper { position: absolute; left: var(--r-paper-x); top: var(--r-paper-y); width: var(--r-paper-w); height: var(--r-paper-h); }
+.r-masthead { position: absolute; left: var(--r-masthead-x); top: var(--r-masthead-y); width: var(--r-masthead-w); height: var(--r-masthead-h); }
+.r-size-readout { position: absolute; left: var(--r-size-readout-x); top: var(--r-size-readout-y); width: var(--r-size-readout-w); height: var(--r-size-readout-h); }
+.r-move-r { position: absolute; left: var(--r-move-r-x); top: var(--r-move-r-y); width: var(--r-move-r-w); height: var(--r-move-r-h); }
+.r-move-u { position: absolute; left: var(--r-move-u-x); top: var(--r-move-u-y); width: var(--r-move-u-w); height: var(--r-move-u-h); }
+.r-move-f { position: absolute; left: var(--r-move-f-x); top: var(--r-move-f-y); width: var(--r-move-f-w); height: var(--r-move-f-h); }
+.r-physical-label { position: absolute; left: var(--r-physical-label-x); top: var(--r-physical-label-y); width: var(--r-physical-label-w); height: var(--r-physical-label-h); }
+.r-permutation-label { position: absolute; left: var(--r-permutation-label-x); top: var(--r-permutation-label-y); width: var(--r-permutation-label-w); height: var(--r-permutation-label-h); }
+.r-cube-viewport { position: absolute; left: var(--r-cube-viewport-x); top: var(--r-cube-viewport-y); width: var(--r-cube-viewport-w); height: var(--r-cube-viewport-h); }
+.r-ring-viewport { position: absolute; left: var(--r-ring-viewport-x); top: var(--r-ring-viewport-y); width: var(--r-ring-viewport-w); height: var(--r-ring-viewport-h); }
+.r-active-trace { position: absolute; left: var(--r-active-trace-x); top: var(--r-active-trace-y); width: var(--r-active-trace-w); height: var(--r-active-trace-h); }
+.r-timeline { position: absolute; left: var(--r-timeline-x); top: var(--r-timeline-y); width: var(--r-timeline-w); height: var(--r-timeline-h); }
