@@ -8,6 +8,7 @@ export interface RingLayout {
   centers: readonly [Point, Point, Point];
   radii: readonly number[][];
   points: readonly Point[];
+  nodeRadius: number;
 }
 
 function circleIntersections(a: Point, ra: number, b: Point, rb: number): readonly [Point, Point] {
@@ -37,12 +38,16 @@ function normalAxis(sticker: Sticker): Axis {
 export function createRingLayout(size: number, width = 900, height = 620): RingLayout {
   const scale = Math.min(width / 900, height / 620);
   const centers: readonly [Point, Point, Point] = [
-    { x: width * 0.35, y: height * 0.44 },
-    { x: width * 0.68, y: height * 0.44 },
-    { x: width * 0.515, y: height * 0.70 },
+    { x: width * 0.38, y: height * 0.42 },
+    { x: width * 0.65, y: height * 0.42 },
+    { x: width * 0.515, y: height * 0.64 },
   ];
-  const spacing = 9 * scale;
-  const base = 210 * scale;
+  // The six faces are the two intersection fields for each pair of ring
+  // families. Their centers do not move as N grows, so higher orders must use
+  // a denser layer cadence or the three inner fields overlap one another.
+  const spacing = (size <= 4 ? 20.5 - size : Math.max(6, 19.5 - size * 1.5)) * scale;
+  const nodeRadius = Math.max(2.75 * scale, Math.min(6 * scale, spacing * 0.38));
+  const base = 170 * scale;
   const middle = (size - 1) / 2;
   const radii = [0, 1, 2].map(() =>
     Array.from({ length: size }, (_, layer) => base + (layer - middle) * spacing),
@@ -69,5 +74,5 @@ export function createRingLayout(size: number, width = 900, height = 620): RingL
     return intersections[sign * orientation > 0 ? 0 : 1];
   });
 
-  return { width, height, centers, radii, points };
+  return { width, height, centers, radii, points, nodeRadius };
 }

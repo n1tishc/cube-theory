@@ -90,7 +90,7 @@ export class RingsView {
     this.dots = stickers.map((sticker) => {
       const dot = svgElement('circle');
       dot.classList.add('sticker-dot');
-      dot.setAttribute('r', String(Math.max(4.2, 7.8 - size * 0.38)));
+      dot.setAttribute('r', String(this.layout?.nodeRadius ?? 3));
       dot.setAttribute('aria-label', `${sticker.face} row ${sticker.row + 1}, column ${sticker.col + 1}`);
       this.stickersGroup.append(dot);
       return dot;

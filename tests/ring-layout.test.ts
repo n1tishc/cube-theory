@@ -8,6 +8,17 @@ describe('sticker-ring layout', () => {
       const layout = createRingLayout(size);
       const stickers = generateStickers(size);
       expect(layout.points).toHaveLength(6 * size * size);
+      expect(layout.nodeRadius).toBeGreaterThanOrEqual(2.75);
+      expect(layout.nodeRadius).toBeLessThanOrEqual(7);
+
+      layout.centers.forEach((center, axis) => {
+        layout.radii[axis]?.forEach((radius) => {
+          expect(center.x - radius).toBeGreaterThanOrEqual(0);
+          expect(center.x + radius).toBeLessThanOrEqual(layout.width);
+          expect(center.y - radius).toBeGreaterThanOrEqual(0);
+          expect(center.y + radius).toBeLessThanOrEqual(layout.height);
+        });
+      });
 
       stickers.forEach((sticker, index) => {
         const point = layout.points[index];
@@ -41,6 +52,31 @@ describe('sticker-ring layout', () => {
           expect(Math.hypot(first.x - second.x, first.y - second.y)).toBeGreaterThan(30);
         }
       }
+
+      const faceSize = size * size;
+      for (let firstFace = 0; firstFace < 6; firstFace += 1) {
+        for (let secondFace = firstFace + 1; secondFace < 6; secondFace += 1) {
+          const first = layout.points.slice(firstFace * faceSize, (firstFace + 1) * faceSize);
+          const second = layout.points.slice(secondFace * faceSize, (secondFace + 1) * faceSize);
+          const closest = Math.min(...first.flatMap((a) => second.map((b) => Math.hypot(a.x - b.x, a.y - b.y))));
+          expect(closest).toBeGreaterThan(layout.nodeRadius * 2 + 2);
+        }
+      }
     });
   }
+
+  it('gives a 4×4 face enough area to distinguish its stickers', () => {
+    const size = 4;
+    const points = createRingLayout(size).points.slice(0, size * size);
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(60);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(60);
+  });
+
+  it('scales markers down as cube density increases', () => {
+    expect(createRingLayout(2).nodeRadius).toBeGreaterThan(createRingLayout(5).nodeRadius);
+    expect(createRingLayout(5).nodeRadius).toBeGreaterThan(createRingLayout(9).nodeRadius);
+  });
 });

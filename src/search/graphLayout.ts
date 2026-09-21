@@ -9,6 +9,9 @@ export interface SearchGraphPoint {
 
 const TAU = Math.PI * 2;
 
+/** Keep the diagram readable even though the worker retains thousands of samples. */
+export const SEARCH_GRAPH_RING_BASE = 1;
+
 function stableAngle(id: string): number {
   let hash = 0;
   for (let index = 0; index < id.length; index += 1) hash = (Math.imul(hash, 31) + id.charCodeAt(index)) | 0;
@@ -28,15 +31,52 @@ export function layoutRadialNodes(nodes: readonly SearchTelemetryNode[], width =
     byDistance.set(node.distance, bucket);
   });
   const points: SearchGraphPoint[] = [];
-  byDistance.forEach((bucket, distance) => {
-    bucket.sort((left, right) => left.id.localeCompare(right.id));
+  const angleById = new Map<string, number>();
+  [...byDistance.entries()].sort(([left], [right]) => left - right).forEach(([distance, bucket]) => {
+    bucket.sort((left, right) => {
+      const leftParentAngle = left.parentId ? angleById.get(left.parentId) : undefined;
+      const rightParentAngle = right.parentId ? angleById.get(right.parentId) : undefined;
+      if (leftParentAngle !== undefined && rightParentAngle !== undefined && leftParentAngle !== rightParentAngle) {
+        return leftParentAngle - rightParentAngle;
+      }
+      return left.id.localeCompare(right.id);
+    });
     const ringRadius = distance === 0 ? 0 : radius * (distance / maxDistance);
+    const rotation = -Math.PI / 2 + stableAngle(`ring-${distance}`) * 0.025;
     bucket.forEach((node, index) => {
-      const angle = distance === 0 ? 0 : stableAngle(node.id) + (index / Math.max(1, bucket.length)) * TAU;
+      const angle = distance === 0 ? 0 : rotation + (index / Math.max(1, bucket.length)) * TAU;
+      angleById.set(node.id, angle);
       points.push({ id: node.id, distance: node.distance, x: centerX + Math.cos(angle) * ringRadius, y: centerY + Math.sin(angle) * ringRadius });
     });
   });
   return points;
+}
+
+function evenlySpaced<T>(items: readonly T[], count: number): T[] {
+  if (items.length <= count) return [...items];
+  return Array.from({ length: count }, (_, index) => items[Math.floor(index * items.length / count)]!);
+}
+
+/**
+ * Chooses a sparse, mostly connected set for display. The full sample remains
+ * available to the status counter; this only controls visual density.
+ */
+export function selectRadialNodes(nodes: readonly SearchTelemetryNode[]): SearchTelemetryNode[] {
+  const ordered = [...nodes].sort((left, right) => left.distance - right.distance || left.id.localeCompare(right.id));
+  const selected = new Map<string, SearchTelemetryNode>();
+  const maxDistance = Math.max(0, ...ordered.map((node) => node.distance));
+
+  for (let distance = 0; distance <= maxDistance; distance += 1) {
+    const ring = ordered.filter((node) => node.distance === distance);
+    const connected = distance === 0
+      ? ring
+      : ring.filter((node) => node.parentId && selected.has(node.parentId));
+    const candidates = connected.length ? connected : ring;
+    const capacity = distance === 0 ? 1 : SEARCH_GRAPH_RING_BASE + distance;
+    evenlySpaced(candidates, capacity).forEach((node) => selected.set(node.id, node));
+  }
+
+  return [...selected.values()];
 }
 
 /** A bounded deterministic force layout for non-pocket/general samples. */

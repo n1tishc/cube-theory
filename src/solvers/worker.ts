@@ -3,23 +3,28 @@ import { buildPocketDistanceTable, createPocketMoveTables, POCKET_STATES, solveP
 import { createCoordinateTables, type CoordinateTables } from './kociemba/coordinates';
 import { createPruningTables, solveThree, type PruningTables } from './kociemba/search';
 import { SearchTelemetryCollector, SEARCH_TELEMETRY_LIMIT, type PocketTelemetryStep, type SearchTelemetryBatch } from './telemetry';
-
-export type SolverRequest =
-  | { type: 'init'; requestId: number; size?: 2 | 3 }
-  | { type: 'solve'; requestId: number; size: number; state: Uint8Array };
-
-export type SolverResponse =
-  | { type: 'progress'; requestId: number; phase: 'moves' | 'distances' | 'coordinates' | 'phase1' | 'phase2'; completed: number; total: number; depth?: number }
-  | ({ type: 'telemetry'; requestId: number } & SearchTelemetryBatch)
-  | { type: 'ready'; requestId: number; size: 2 | 3; elapsedMs: number }
-  | { type: 'solution'; requestId: number; moves: Move[]; elapsedMs: number }
-  | { type: 'error'; requestId: number; message: string };
+import type { SolverRequest, SolverResponse } from './protocol';
+import { normalizeQaSolveDelay } from './qaDelay';
+import { solveFourByFour } from './reduction/solve';
 
 let moveTables: PocketMoveTables | null = null;
 let distances: Uint8Array | null = null;
 let coordinateTables: CoordinateTables | null = null;
 let pruningTables: PruningTables | null = null;
 const scope = self as unknown as { postMessage(message: SolverResponse): void; onmessage: ((event: MessageEvent<SolverRequest>) => void) | null };
+function postSolution(message: Extract<SolverResponse, { type: 'solution' }>, delayMs: number): void {
+  if (delayMs === 0) { scope.postMessage(message); return; }
+  setTimeout(() => scope.postMessage(message), delayMs);
+}
+
+function classifyError(error: unknown): Extract<SolverResponse, { type: 'error' }>['code'] {
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  if (message.includes('invalid') || message.includes('color') || message.includes('facelet')) return 'INVALID_INPUT';
+  if (message.includes('parity') || message.includes('invariant')) return 'INVARIANT_FAILURE';
+  if (message.includes('depth') || message.includes('limit')) return 'RESOURCE_LIMIT';
+  if (message.includes('coverage') || message.includes('unsupported')) return 'ALGORITHM_COVERAGE';
+  return 'INTERNAL';
+}
 
 function initializePocket(requestId: number): void {
   if (distances) { scope.postMessage({ type: 'ready', requestId, size: 2, elapsedMs: 0 }); return; }
@@ -64,20 +69,25 @@ function initializePocket(requestId: number): void {
   scope.postMessage({ type: 'ready', requestId, size: 2, elapsedMs: performance.now() - startedAt });
 }
 
-function initializeThree(requestId: number): void {
-  if (pruningTables && coordinateTables) { scope.postMessage({ type: 'ready', requestId, size: 3, elapsedMs: 0 }); return; }
+function initializeThree(requestId: number, readySize: 3 | 4 = 3): void {
+  if (pruningTables && coordinateTables) { scope.postMessage({ type: 'ready', requestId, size: readySize, elapsedMs: 0 }); return; }
   const startedAt = performance.now();
   coordinateTables = createCoordinateTables((completed, total) => scope.postMessage({ type: 'progress', requestId, phase: 'coordinates', completed, total }));
   pruningTables = createPruningTables(coordinateTables, (table, completed, total, depth) => scope.postMessage({
     type: 'progress', requestId, phase: table < 2 ? 'phase1' : 'phase2', completed, total, depth,
   }));
-  scope.postMessage({ type: 'ready', requestId, size: 3, elapsedMs: performance.now() - startedAt });
+  scope.postMessage({ type: 'ready', requestId, size: readySize, elapsedMs: performance.now() - startedAt });
 }
 
 scope.onmessage = (event) => {
   const request = event.data;
   try {
-    if (request.type === 'init') { request.size === 3 ? initializeThree(request.requestId) : initializePocket(request.requestId); return; }
+    if (request.type === 'init') {
+      request.size === 3 || request.size === 4
+        ? initializeThree(request.requestId, request.size)
+        : initializePocket(request.requestId);
+      return;
+    }
     const startedAt = performance.now();
     let moves: Move[];
     if (request.size === 2) {
@@ -103,9 +113,25 @@ scope.onmessage = (event) => {
       if (!coordinateTables || !pruningTables) initializeThree(request.requestId);
       if (!coordinateTables || !pruningTables) throw new Error('3×3 table initialization failed');
       moves = solveThree(new Uint8Array(request.state), coordinateTables, pruningTables);
-    } else throw new Error('Solving is available for N = 2 and N = 3');
-    scope.postMessage({ type: 'solution', requestId: request.requestId, moves, elapsedMs: performance.now() - startedAt });
+    } else if (request.size === 4) {
+      if (!coordinateTables || !pruningTables) initializeThree(request.requestId, 4);
+      if (!coordinateTables || !pruningTables) throw new Error('4×4 reduction table initialization failed');
+      moves = [...solveFourByFour(new Uint8Array(request.state), {
+        solveThree: (projected) => solveThree(projected, coordinateTables!, pruningTables!),
+        progress: ({ stage, completed, total }) => scope.postMessage({
+          type: 'progress',
+          requestId: request.requestId,
+          phase: stage,
+          completed: completed ?? 0,
+          total: total ?? 1,
+        }),
+      }).moves];
+    } else throw new Error('Solving is available for N = 2, N = 3, and N = 4');
+    postSolution(
+      { type: 'solution', requestId: request.requestId, moves, elapsedMs: performance.now() - startedAt },
+      normalizeQaSolveDelay(request.qaDelayMs, true),
+    );
   } catch (error) {
-    scope.postMessage({ type: 'error', requestId: request.requestId, message: error instanceof Error ? error.message : 'Unknown solver error' });
+    scope.postMessage({ type: 'error', requestId: request.requestId, code: classifyError(error), message: error instanceof Error ? error.message : 'Unknown solver error' });
   }
 };

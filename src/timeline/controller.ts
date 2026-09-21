@@ -4,6 +4,29 @@ import { applyMove, solvedState } from '../core/state';
 
 export interface Step { move: Move; before: Uint8Array; after: Uint8Array }
 
+export const MAX_TIMELINE_MOVES = 20_000;
+
+export async function prepareTimelineSteps(
+  initial: Uint8Array,
+  size: number,
+  moves: readonly Move[],
+  yieldToMain: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 0)),
+  chunkSize = 128,
+): Promise<Step[]> {
+  if (moves.length > MAX_TIMELINE_MOVES) throw new Error(`Solution exceeds the ${MAX_TIMELINE_MOVES.toLocaleString()} move resource limit`);
+  const steps: Step[] = [];
+  let state = initial;
+  for (let index = 0; index < moves.length; index += 1) {
+    const move = moves[index]!;
+    if (move.layer < 0 || move.layer >= size) throw new Error('Move is outside this cube');
+    const after = applyMove(state, size, move);
+    steps.push({ move, before: state, after });
+    state = after;
+    if ((index + 1) % chunkSize === 0) await yieldToMain();
+  }
+  return steps;
+}
+
 export interface ActiveTransition extends Step {
   progress: number;
   direction: 'append' | 'forward' | 'back';
@@ -73,6 +96,16 @@ export class TimelineController {
       state = after;
     }
     this.emit();
+  }
+
+  insertPreparedSteps(steps: readonly Step[], expectedState: Uint8Array): boolean {
+    if (this.active || this.queue.length || this.state.length !== expectedState.length
+      || !this.state.every((value, index) => value === expectedState[index])) return false;
+    this.playing = false;
+    if (this.index < this.steps.length) this.steps.splice(this.index);
+    this.steps.push(...steps);
+    this.emit();
+    return true;
   }
 
   play(): void {

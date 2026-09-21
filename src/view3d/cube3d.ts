@@ -70,6 +70,7 @@ export class Cube3DView {
       this.renderer.setSize(Math.max(1, width), Math.max(1, height), false);
       this.camera.aspect = Math.max(1, width) / Math.max(1, height);
       this.camera.updateProjectionMatrix();
+      if (this.size > 0) this.fitCamera(this.size, true);
     };
     new ResizeObserver(resize).observe(container);
     resize();
@@ -174,9 +175,24 @@ export class Cube3DView {
       cubie.add(plane);
     });
 
-    const fitDistance = Math.max(6.5, size * 2.15);
-    this.camera.position.set(fitDistance * 0.78, fitDistance * 0.68, fitDistance * 0.9);
     this.controls.target.set(0, 0, 0);
+    this.fitCamera(size);
+  }
+
+  private fitCamera(size: number, preserveDirection = false): void {
+    const verticalFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * this.camera.aspect);
+    const limitingHalfFov = Math.min(verticalFov, horizontalFov) / 2;
+    const boundingRadius = Math.sqrt(3) * size * 0.5;
+    const distance = Math.max(7, (boundingRadius / Math.sin(limitingHalfFov)) * 1.12);
+    const direction = preserveDirection
+      ? this.camera.position.clone().sub(this.controls.target).normalize()
+      : new THREE.Vector3(0.78, 0.68, 0.9).normalize();
+
+    this.controls.minDistance = Math.max(4, distance * 0.38);
+    this.controls.maxDistance = Math.max(18, distance * 1.6);
+    this.camera.position.copy(this.controls.target).addScaledVector(direction, distance);
+    this.camera.updateProjectionMatrix();
     this.controls.update();
   }
 

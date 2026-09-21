@@ -1,9 +1,9 @@
 import type { Move } from '../core/moves';
 import type { SearchTelemetryBatch, SearchTelemetryEdge, SearchTelemetryNode, SearchTelemetryStage } from '../solvers/telemetry';
-import { layoutSearchNodes, type SearchGraphPoint } from './graphLayout';
+import { layoutSearchNodes, selectRadialNodes, type SearchGraphPoint } from './graphLayout';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const MOVE_COLORS = ['#cf2928', '#0b59b8', '#39a86f'];
+const NODE_COLORS = ['#e7462e', '#ff8635', '#1757a6', '#2e7b59', '#f3b735', '#f7f4eb'];
 
 function svgElement<K extends keyof SVGElementTagNameMap>(name: K): SVGElementTagNameMap[K] {
   return document.createElementNS(SVG_NS, name);
@@ -15,6 +15,7 @@ function moveLabel(move: Move): string {
 
 export class SearchGraphView {
   private readonly svg: SVGSVGElement;
+  private readonly ringGroup = svgElement('g');
   private readonly edgeGroup = svgElement('g');
   private readonly nodeGroup = svgElement('g');
   private readonly label = svgElement('text');
@@ -35,7 +36,8 @@ export class SearchGraphView {
     this.label.setAttribute('x', '22');
     this.label.setAttribute('y', '498');
     this.label.textContent = 'SELECT N = 2 · EXACT TABLE SAMPLE LOADS ON INITIALIZATION';
-    this.svg.append(this.edgeGroup, this.nodeGroup, this.label);
+    this.ringGroup.classList.add('search-rings');
+    this.svg.append(this.ringGroup, this.edgeGroup, this.nodeGroup, this.label);
     container.append(this.svg);
   }
 
@@ -77,13 +79,35 @@ export class SearchGraphView {
     // streams, so preserve the promised distance-ring reading. Other future
     // samples can use descriptive IDs and fall back to the force layout.
     const exactPocket = nodes.every((node) => /^\d+$/.test(node.id));
-    const points = layoutSearchNodes(nodes, exactPocket ? 'table-build' : this.stage);
+    const displayNodes = exactPocket ? selectRadialNodes(nodes) : nodes;
+    const points = layoutSearchNodes(displayNodes, exactPocket ? 'table-build' : this.stage);
     const pointById = new Map(points.map((point) => [point.id, point]));
+    const incomingEdgeByNode = new Map(edges.map((edge) => [edge.target, edge]));
     const pathEdges = new Set(this.solutionPath.slice(0, -1).map((source, index) => `${source}>${this.solutionPath[index + 1]}`));
+    this.renderRingGuides(points);
     this.edgeGroup.replaceChildren(...edges.map((edge) => this.renderEdge(edge, pointById, pathEdges)));
-    this.nodeGroup.replaceChildren(...points.map((point) => this.renderNode(point)));
+    this.nodeGroup.replaceChildren(...points.map((point) => this.renderNode(point, incomingEdgeByNode.get(point.id))));
     const stageLabel = this.stage === 'table-build' ? 'TABLE BUILD · RADIAL DISTANCE SAMPLE' : 'WARM SOLVE · DISTANCE DESCENT';
-    this.label.textContent = `${stageLabel} · ${nodes.length.toLocaleString()} NODES / ${this.explored.toLocaleString()} EXPLORED${this.solutionPath.length ? ` · PATH ${this.solutionPath.length - 1}` : ''}`;
+    const visibleLabel = displayNodes.length < nodes.length ? ` · ${displayNodes.length} SHOWN` : '';
+    this.label.textContent = `${stageLabel} · ${nodes.length.toLocaleString()} SAMPLED${visibleLabel} / ${this.explored.toLocaleString()} EXPLORED${this.solutionPath.length ? ` · PATH ${this.solutionPath.length - 1}` : ''}`;
+  }
+
+  private renderRingGuides(points: readonly SearchGraphPoint[]): void {
+    const maxDistance = Math.max(0, ...points.map((point) => point.distance));
+    if (!maxDistance) { this.ringGroup.replaceChildren(); return; }
+    const centerX = 450;
+    const centerY = 520 * 0.52;
+    const radius = 520 * 0.41;
+    const guideCount = Math.min(7, maxDistance);
+    const rings = Array.from({ length: guideCount }, (_, index) => {
+      const circle = svgElement('circle');
+      circle.setAttribute('cx', String(centerX));
+      circle.setAttribute('cy', String(centerY));
+      circle.setAttribute('r', (radius * ((index + 1) / guideCount)).toFixed(1));
+      circle.classList.add('search-ring-guide');
+      return circle;
+    });
+    this.ringGroup.replaceChildren(...rings);
   }
 
   private renderEdge(edge: SearchTelemetryEdge, points: Map<string, SearchGraphPoint>, pathEdges: Set<string>): SVGLineElement {
@@ -98,21 +122,25 @@ export class SearchGraphView {
     line.classList.add('search-edge');
     const path = `${edge.source}>${edge.target}`;
     line.classList.toggle('is-solution', Boolean(edge.solution) || pathEdges.has(path));
-    line.setAttribute('stroke', MOVE_COLORS[edge.move.axis] ?? MOVE_COLORS[0]!);
+    line.setAttribute('stroke', 'currentColor');
     const title = svgElement('title');
     title.textContent = `${moveLabel(edge.move)}${line.classList.contains('is-solution') ? ' · solution path' : ''}`;
     line.append(title);
     return line;
   }
 
-  private renderNode(point: SearchGraphPoint): SVGCircleElement {
+  private renderNode(point: SearchGraphPoint, incomingEdge?: SearchTelemetryEdge): SVGCircleElement {
     const circle = svgElement('circle');
     circle.classList.add('search-node');
     if (this.solutionPath.includes(point.id)) circle.classList.add('is-solution');
     if (point.distance === 0) circle.classList.add('is-solved');
     circle.setAttribute('cx', point.x.toFixed(1));
     circle.setAttribute('cy', point.y.toFixed(1));
-    circle.setAttribute('r', point.distance === 0 ? '8' : this.stage === 'table-build' ? '3.4' : '5');
+    circle.setAttribute('r', point.distance === 0 ? '9' : this.stage === 'table-build' ? '6' : '6');
+    if (point.distance > 0 && incomingEdge) {
+      const colorIndex = incomingEdge.move.axis * 2 + (incomingEdge.move.turns === 3 ? 1 : 0);
+      circle.style.fill = NODE_COLORS[colorIndex] ?? NODE_COLORS[0]!;
+    }
     circle.setAttribute('tabindex', '0');
     circle.setAttribute('role', 'img');
     circle.setAttribute('aria-label', `Search node ${point.id}, distance ${point.distance}${this.solutionPath.includes(point.id) ? ', solution path' : ''}`);

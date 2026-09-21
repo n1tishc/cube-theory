@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Move } from '../src/core/moves';
-import { SearchTelemetryCollector, SEARCH_TELEMETRY_LIMIT } from '../src/solvers/telemetry';
-import { layoutForceNodes, layoutRadialNodes } from '../src/search/graphLayout';
+import { SearchTelemetryCollector, SEARCH_TELEMETRY_LIMIT, type SearchTelemetryNode } from '../src/solvers/telemetry';
+import { layoutForceNodes, layoutRadialNodes, selectRadialNodes } from '../src/search/graphLayout';
 
 const move: Move = { axis: 0, layer: 1, turns: 1 };
 
@@ -41,6 +41,21 @@ describe('search graph layouts', () => {
     expect(solved).toBeDefined();
     expect(farthest).toBeDefined();
     if (solved && farthest) expect(Math.hypot(farthest.x - 450, farthest.y - 270)).toBeGreaterThan(100);
+  });
+
+  it('keeps the radial display sparse and connected through sampled parents', () => {
+    const nodes: SearchTelemetryNode[] = [{ id: '0', distance: 0, stage: 'table-build' }];
+    for (let distance = 1; distance <= 5; distance += 1) {
+      const parentId = nodes.find((node) => node.distance === distance - 1)?.id ?? '0';
+      for (let index = 0; index < 100; index += 1) {
+        nodes.push({ id: `${distance}-${index}`, parentId, distance, stage: 'table-build' as const });
+      }
+    }
+    const selected = selectRadialNodes(nodes);
+    expect(selected.length).toBeLessThan(70);
+    expect(selected.some((node) => node.distance === 5)).toBe(true);
+    const ids = new Set(selected.map((node) => node.id));
+    selected.filter((node) => node.distance > 0).forEach((node) => expect(ids.has(node.parentId!)).toBe(true));
   });
 
   it('returns bounded coordinates for general samples', () => {

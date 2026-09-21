@@ -9,6 +9,11 @@ export interface CubieState {
   edgeOrientation: number[];
 }
 
+export interface CubieDiagnostics extends CubieState {
+  flipParity: 0 | 1;
+  permutationParity: 0 | 1;
+}
+
 type Matrix = readonly [Vec3, Vec3, Vec3];
 
 const CORNER_POSITIONS: readonly Vec3[] = [
@@ -58,16 +63,17 @@ const cornerByColors = new Map(cornerFacelets.map((slots, piece) => [slots.map((
 const edgeByColors = new Map(edgeFacelets.map((slots, piece) => [slots.map((i) => solved[i]).sort().join(','), piece]));
 const cornerPrimary = cornerFacelets.map((slots) => solved[slots[0] ?? 0]);
 const edgePrimary = edgeFacelets.map((slots) => solved[slots[0] ?? 0]);
+const cornerColors = cornerFacelets.map((slots) => slots.map((index) => solved[index] ?? 0));
 
-function parity(permutation: readonly number[]): number {
+function parity(permutation: readonly number[]): 0 | 1 {
   let value = 0;
   for (let i = 0; i < permutation.length; i += 1) for (let j = i + 1; j < permutation.length; j += 1) {
     if ((permutation[i] ?? 0) > (permutation[j] ?? 0)) value ^= 1;
   }
-  return value;
+  return value as 0 | 1;
 }
 
-export function faceletsToCubie(state: Uint8Array): CubieState {
+export function diagnoseThreeFacelets(state: Uint8Array): CubieDiagnostics {
   if (state.length !== 54) throw new Error('A 3×3 state must contain 54 facelets');
   const counts = new Array<number>(6).fill(0);
   state.forEach((color) => { if (color < 6) counts[color] = (counts[color] ?? 0) + 1; });
@@ -86,6 +92,11 @@ export function faceletsToCubie(state: Uint8Array): CubieState {
     cornerPermutation.push(piece);
     const orientation = colors.indexOf(cornerPrimary[piece] ?? 0);
     if (orientation < 0) throw new Error('A corner is missing its U/D color');
+    const canonical = cornerColors[piece];
+    if (colors[(orientation + 1) % 3] !== canonical?.[1]
+      || colors[(orientation + 2) % 3] !== canonical?.[2]) {
+      throw new Error('A 3×3 corner has mirrored color order');
+    }
     cornerOrientation.push(orientation);
   });
   edgeFacelets.forEach((slots) => {
@@ -96,10 +107,31 @@ export function faceletsToCubie(state: Uint8Array): CubieState {
     edgePermutation.push(piece);
     edgeOrientation.push(colors[0] === edgePrimary[piece] ? 0 : 1);
   });
-  if (cornerOrientation.reduce((sum, value) => sum + value, 0) % 3) throw new Error('Invalid 3×3 corner twist');
-  if (edgeOrientation.reduce((sum, value) => sum + value, 0) % 2) throw new Error('Invalid 3×3 edge flip');
-  if (parity(cornerPermutation) !== parity(edgePermutation)) throw new Error('Invalid 3×3 permutation parity');
-  return { cornerPermutation, cornerOrientation, edgePermutation, edgeOrientation };
+  if (cornerOrientation.reduce((sum, value) => sum + value, 0) % 3) {
+    throw new Error('Invalid 3×3 corner twist');
+  }
+  const flipParity = edgeOrientation.reduce((sum, value) => sum + value, 0) % 2 as 0 | 1;
+  const permutationParity = (parity(cornerPermutation) ^ parity(edgePermutation)) as 0 | 1;
+  return {
+    cornerPermutation,
+    cornerOrientation,
+    edgePermutation,
+    edgeOrientation,
+    flipParity,
+    permutationParity,
+  };
+}
+
+export function faceletsToCubie(state: Uint8Array): CubieState {
+  const diagnostics = diagnoseThreeFacelets(state);
+  if (diagnostics.flipParity) throw new Error('Invalid 3×3 edge flip');
+  if (diagnostics.permutationParity) throw new Error('Invalid 3×3 permutation parity');
+  return {
+    cornerPermutation: diagnostics.cornerPermutation,
+    cornerOrientation: diagnostics.cornerOrientation,
+    edgePermutation: diagnostics.edgePermutation,
+    edgeOrientation: diagnostics.edgeOrientation,
+  };
 }
 
 export function applyCubieEffect(state: CubieState, effect: CubieState): CubieState {

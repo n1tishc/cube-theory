@@ -4,11 +4,13 @@ import '@fontsource/source-serif-4/600.css';
 import './styles.css';
 import { parseNotation, formatMove } from './core/moves';
 import { createScramble } from './core/scramble';
-import { applyMove, isSolved } from './core/state';
+import { isSolved } from './core/state';
 import { Cube3DView } from './view3d/cube3d';
 import { RingsView } from './rings/ringsView';
-import { TimelineController } from './timeline/controller';
-import type { SolverRequest, SolverResponse } from './solvers/worker';
+import { prepareTimelineSteps, TimelineController } from './timeline/controller';
+import type { SolverResponse } from './solvers/protocol';
+import { parseQaSolveDelay } from './solvers/qaDelay';
+import { SolverWorkerClient, type SolverClientEvent } from './solvers/workerClient';
 import { SearchGraphView } from './search/graphView';
 
 const app = document.querySelector<HTMLElement>('#app');
@@ -64,20 +66,6 @@ app.innerHTML = `
           <p>Bounded worker telemetry · path edges are marked in red</p>
         </header>
       </section>
-      <svg class="active-trace" viewBox="0 0 1000 600" aria-hidden="true">
-        <defs>
-          <marker id="trace-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" />
-          </marker>
-        </defs>
-        <path class="trace-curve" d="M 110 345 C 210 130, 340 95, 450 180" />
-        <path class="trace-stem" d="M 110 345 L 110 500" />
-        <path class="trace-arrow" d="M 292 119 L 320 108 L 310 136 Z" />
-        <circle class="trace-origin-outer" cx="110" cy="345" r="17" />
-        <circle class="trace-origin-inner" cx="110" cy="345" r="8" />
-        <circle class="trace-stem-node" cx="110" cy="500" r="8" />
-        <circle class="trace-destination" cx="450" cy="180" r="10" />
-      </svg>
     </section>
 
     <footer class="timeline" aria-label="Move timeline">
@@ -115,11 +103,10 @@ const status = document.querySelector<HTMLElement>('#status');
 const solverStatus = document.querySelector<HTMLElement>('#solver-status')!;
 const timelineFill = document.querySelector<HTMLElement>('#timeline-fill');
 const timelineMarks = document.querySelector<HTMLElement>('#timeline-marks');
-const activeTrace = document.querySelector<SVGElement>('.active-trace');
 
 if (!sizeInput || !sizeOutput || !cubeViewport || !ringViewport || !stepBack
   || !stepForward || !reset || !scramble || !solve || !playPause || !speed || !scrubber
-  || !status || !solverStatus || !timelineFill || !timelineMarks || !activeTrace || !searchViewport) {
+  || !status || !solverStatus || !timelineFill || !timelineMarks || !searchViewport) {
   throw new Error('Workspace controls are incomplete');
 }
 
@@ -140,12 +127,9 @@ document.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => 
       tab.classList.toggle('is-active', selected);
       tab.setAttribute('aria-selected', String(selected));
     });
-    activeTrace.toggleAttribute('hidden', search);
   });
 });
 
-const solverWorker = new Worker(new URL('./solvers/worker.ts', import.meta.url), { type: 'module' });
-let requestId = 0;
 const solverReady = new Set<number>();
 const solverInitializing = new Set<number>();
 let pocketInitializationRequestId: number | null = null;
@@ -155,17 +139,27 @@ function sameState(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function initializeSolver(size: 2 | 3): void {
-  if (solverReady.has(size) || solverInitializing.has(size)) return;
-  solverInitializing.add(size);
-  solverStatus.textContent = size === 2 ? 'BUILDING 2×2 EXACT TABLE · MOVE COORDINATES' : 'BUILDING 3×3 TABLES · MOVE COORDINATES';
-  const message: SolverRequest = { type: 'init', requestId: ++requestId, size };
-  if (size === 2) pocketInitializationRequestId = message.requestId;
-  solverWorker.postMessage(message);
+type SolvableSize = 2 | 3 | 4;
+
+function isSolvableSize(size: number): size is SolvableSize {
+  return size === 2 || size === 3 || size === 4;
 }
 
-solverWorker.addEventListener('message', (event: MessageEvent<SolverResponse>) => {
-  const message = event.data;
+function solverKind(size: SolvableSize): string {
+  return size === 2 ? 'EXACT' : size === 3 ? 'TWO-PHASE' : 'REDUCTION';
+}
+
+function initializeSolver(size: SolvableSize): void {
+  if (solverReady.has(size) || solverInitializing.has(size)) return;
+  solverInitializing.add(size);
+  solverStatus.textContent = size === 2
+    ? 'BUILDING 2×2 EXACT TABLE · MOVE COORDINATES'
+    : `BUILDING 3×3 TABLES FOR ${size}×${size} ${size === 4 ? 'REDUCTION' : 'SOLVING'}`;
+  const id = solverClient.initialize(size);
+  if (size === 2) pocketInitializationRequestId = id;
+}
+
+async function handleSolverMessage(message: SolverResponse): Promise<void> {
   if (message.type === 'telemetry') {
     const snapshot = controller.getSnapshot();
     const acceptsTableBuild = message.stage === 'table-build'
@@ -188,6 +182,15 @@ solverWorker.addEventListener('message', (event: MessageEvent<SolverResponse>) =
   }
   if (message.type === 'progress') {
     const percent = Math.round((message.completed / message.total) * 100);
+    const reductionLabel = message.phase === 'centers' ? 'SOLVING CENTERS'
+      : message.phase === 'edge-pairing' ? 'PAIRING EDGES'
+        : message.phase === 'parity' ? 'CORRECTING PARITY'
+          : message.phase === 'three-by-three' ? 'SOLVING REDUCED 3×3'
+            : message.phase === 'verifying' ? 'VERIFYING FULL 4×4 REPLAY' : null;
+    if (reductionLabel && activeSolve?.requestId === message.requestId) {
+      solverStatus.textContent = `${reductionLabel} · ${percent}%`;
+      return;
+    }
     const label = message.phase === 'coordinates' ? '3×3 MOVE COORDINATES'
       : message.phase === 'phase1' ? '3×3 PHASE I PRUNING'
         : message.phase === 'phase2' ? '3×3 PHASE II PRUNING'
@@ -199,14 +202,17 @@ solverWorker.addEventListener('message', (event: MessageEvent<SolverResponse>) =
     const size = controller.getSnapshot().size;
     const initializedSize = message.size;
     solverInitializing.delete(initializedSize); solverReady.add(initializedSize);
-    solverStatus.textContent = size === initializedSize ? `${size === 2 ? 'EXACT' : 'TWO-PHASE'} TABLES READY · ${(message.elapsedMs / 1000).toFixed(1)} S` : `SOLVER READY · SELECT N = ${initializedSize}`;
+    solverStatus.textContent = size === initializedSize ? `${solverKind(initializedSize)} SOLVER READY · ${(message.elapsedMs / 1000).toFixed(1)} S` : `SOLVER READY · SELECT N = ${initializedSize}`;
     solve.disabled = !solverReady.has(size);
     return;
   }
   if (message.type === 'error') {
     if (activeSolve?.requestId !== message.requestId && activeSolve) return;
     activeSolve = null;
-    solverStatus.textContent = `SOLVER ERROR · ${message.message.toUpperCase()}`;
+    const recovery = message.code === 'RESOURCE_LIMIT' ? ' · TRY RESETTING AND SCRAMBLING AGAIN'
+      : message.code === 'ALGORITHM_COVERAGE' ? ' · THIS POSITION IS OUTSIDE THE QUALIFIED SET'
+        : ' · CUBE STATE WAS NOT CHANGED';
+    solverStatus.textContent = `SOLVER ERROR · ${message.message.toUpperCase()}${recovery}`;
     solve.disabled = !solverReady.has(controller.getSnapshot().size);
     return;
   }
@@ -220,8 +226,20 @@ solverWorker.addEventListener('message', (event: MessageEvent<SolverResponse>) =
     solve.disabled = !solverReady.has(snapshot.size);
     return;
   }
-  let verified = activeSolve.state;
-  message.moves.forEach((move) => { verified = applyMove(verified, activeSolve!.size, move); });
+  const solveRequest = activeSolve;
+  solverStatus.textContent = 'VERIFYING SOLUTION · PREPARING TIMELINE';
+  let steps;
+  try {
+    steps = await prepareTimelineSteps(solveRequest.state, solveRequest.size, message.moves);
+  } catch (error) {
+    if (activeSolve?.requestId !== solveRequest.requestId) return;
+    activeSolve = null;
+    solverStatus.textContent = `SOLVER ERROR · ${error instanceof Error ? error.message.toUpperCase() : 'TIMELINE PREPARATION FAILED'}`;
+    solve.disabled = !solverReady.has(controller.getSnapshot().size);
+    return;
+  }
+  if (activeSolve?.requestId !== solveRequest.requestId) return;
+  const verified = steps.at(-1)?.after ?? solveRequest.state;
   if (!isSolved(verified, activeSolve.size)) {
     activeSolve = null;
     solverStatus.textContent = 'SOLVER ERROR · RETURNED PATH FAILED VERIFICATION';
@@ -229,13 +247,53 @@ solverWorker.addEventListener('message', (event: MessageEvent<SolverResponse>) =
     return;
   }
   activeSolve = null;
-  controller.insertMoves(message.moves);
-  solverStatus.textContent = `${snapshot.size === 2 ? 'OPTIMAL' : 'TWO-PHASE'} SOLUTION · ${message.moves.length} MOVES · ${message.elapsedMs.toFixed(1)} MS`;
+  if (!controller.insertPreparedSteps(steps, solveRequest.state)) {
+    solverStatus.textContent = 'SOLUTION DISCARDED · CUBE CHANGED DURING PREPARATION';
+    solve.disabled = !solverReady.has(controller.getSnapshot().size);
+    return;
+  }
+  solverStatus.textContent = `${snapshot.size === 2 ? 'OPTIMAL' : snapshot.size === 3 ? 'TWO-PHASE' : 'REDUCTION'} SOLUTION · ${message.moves.length.toLocaleString()} MOVES · ${message.elapsedMs.toFixed(1)} MS`;
   solve.disabled = false;
   controller.play();
-});
+}
+
+function handleSolverEvent(event: SolverClientEvent): void {
+  if (event.type === 'message') { void handleSolverMessage(event.message); return; }
+  if (event.type === 'timeout') {
+    activeSolve = null;
+    solverStatus.textContent = `RESOURCE LIMIT · ${event.operation.toUpperCase()} WATCHDOG EXPIRED`;
+    return;
+  }
+  solverReady.clear();
+  solverInitializing.clear();
+  pocketInitializationRequestId = null;
+  if (event.type === 'failed') {
+    activeSolve = null;
+    solve.disabled = true;
+    const size = controller.getSnapshot().size;
+    solverStatus.textContent = `SOLVER WORKER FAILED · ${event.message.toUpperCase()} · RESTARTING`;
+    if (isSolvableSize(size)) initializeSolver(size);
+  }
+}
+
+const qaSolveDelayMs = parseQaSolveDelay(window.location.search, import.meta.env.DEV);
+
+const solverClient = new SolverWorkerClient(
+  () => new Worker(new URL('./solvers/worker.ts', import.meta.url), { type: 'module' }),
+  handleSolverEvent,
+);
+
+function cancelSolverWork(reason: string, reinitialize = true): void {
+  if (!activeSolve && solverInitializing.size === 0) return;
+  activeSolve = null;
+  solverClient.cancel(reason);
+  const size = controller.getSnapshot().size;
+  solverStatus.textContent = `SOLVE CANCELLED · ${reason.toUpperCase()}`;
+  if (reinitialize && isSolvableSize(size)) initializeSolver(size);
+}
 
 function appendNotation(notation: string, inverse = false): void {
+  cancelSolverWork('cube edited');
   const size = controller.getSnapshot().size;
   const token = inverse ? `${notation}'` : notation;
   const move = parseNotation(token, size)[0];
@@ -261,55 +319,67 @@ window.addEventListener('keydown', (event) => {
 sizeInput.addEventListener('input', () => { sizeOutput.value = sizeInput.value; });
 sizeInput.addEventListener('change', () => {
   const nextSize = Number(sizeInput.value);
-  activeSolve = null;
+  cancelSolverWork('size changed', false);
   controller.reset(nextSize);
   solve.textContent = `SOLVE ${nextSize}×${nextSize}`;
   solve.disabled = !solverReady.has(nextSize);
-  solverStatus.textContent = nextSize > 3 ? 'SOLVING IS AVAILABLE FOR N = 2 AND N = 3' : solverReady.has(nextSize) ? `${nextSize === 2 ? 'EXACT' : 'TWO-PHASE'} TABLES READY` : `BUILDING ${nextSize}×${nextSize} TABLES`;
-  if (nextSize === 2 || nextSize === 3) initializeSolver(nextSize);
+  solverStatus.textContent = !isSolvableSize(nextSize)
+    ? 'SOLVING IS AVAILABLE FOR N = 2, N = 3, AND N = 4'
+    : solverReady.has(nextSize)
+      ? `${solverKind(nextSize)} SOLVER READY`
+      : `BUILDING ${nextSize === 4 ? '3×3 TABLES FOR 4×4 REDUCTION' : `${nextSize}×${nextSize} TABLES`}`;
+  if (isSolvableSize(nextSize)) initializeSolver(nextSize);
 });
 stepBack.addEventListener('click', () => controller.stepBack());
 stepForward.addEventListener('click', () => controller.stepForward());
-reset.addEventListener('click', () => { activeSolve = null; controller.reset(); });
+reset.addEventListener('click', () => { cancelSolverWork('reset'); controller.reset(); });
 scramble.addEventListener('click', () => {
-  activeSolve = null;
+  cancelSolverWork('new scramble');
   const size = controller.getSnapshot().size;
   controller.reset(size);
   controller.insertMoves(createScramble(size));
-  solverStatus.textContent = size <= 3 ? 'SCRAMBLE STAGED · 25 MOVES' : 'SCRAMBLE STAGED · SOLVING REQUIRES N = 2 OR N = 3';
+  solverStatus.textContent = isSolvableSize(size) ? 'SCRAMBLE STAGED · 25 MOVES' : 'SCRAMBLE STAGED · SOLVING REQUIRES N = 2, N = 3, OR N = 4';
   controller.play();
 });
 solve.addEventListener('click', () => {
   const snapshot = controller.getSnapshot();
-  if ((snapshot.size !== 2 && snapshot.size !== 3) || !solverReady.has(snapshot.size) || snapshot.active || snapshot.queued) return;
+  if (!isSolvableSize(snapshot.size) || !solverReady.has(snapshot.size) || snapshot.active || snapshot.queued) return;
   const state = snapshot.state.slice();
-  const id = ++requestId;
+  const id = solverClient.solve(snapshot.size, state, qaSolveDelayMs);
   activeSolve = { requestId: id, size: snapshot.size, state };
   solve.disabled = true;
-  solverStatus.textContent = snapshot.size === 2 ? 'SOLVING · NORMALIZING D-B-L FRAME' : 'SOLVING · PHASE I SUBGROUP SEARCH';
-  const message: SolverRequest = { type: 'solve', requestId: id, size: snapshot.size, state };
-  solverWorker.postMessage(message);
+  solverStatus.textContent = snapshot.size === 2 ? 'SOLVING · NORMALIZING D-B-L FRAME'
+    : snapshot.size === 3 ? 'SOLVING · PHASE I SUBGROUP SEARCH'
+      : 'REDUCING 4×4 · SOLVING CENTERS';
 });
 playPause.addEventListener('click', () => {
   if (controller.getSnapshot().playing) controller.pause();
   else controller.play();
 });
 speed.addEventListener('change', () => controller.setSpeed(Number(speed.value)));
-scrubber.addEventListener('input', () => controller.seek(Number(scrubber.value)));
+scrubber.addEventListener('input', () => { cancelSolverWork('timeline seek'); controller.seek(Number(scrubber.value)); });
 
+let renderedMarkerKey = '';
 controller.subscribe((snapshot) => {
   const total = snapshot.steps.length;
   const fraction = total === 0 ? 0 : snapshot.index / total;
   timelineFill.style.transform = `scaleX(${fraction})`;
   scrubber.max = String(total);
   scrubber.value = String(snapshot.index);
-  timelineMarks.replaceChildren(...snapshot.steps.map((step, index) => {
-    const mark = document.createElement('span');
-    mark.className = `timeline-mark${index < snapshot.index ? ' is-complete' : ''}`;
-    mark.style.left = `${((index + 1) / Math.max(1, total)) * 100}%`;
-    mark.title = formatMove(step.move, snapshot.size);
-    return mark;
-  }));
+  const markerKey = `${snapshot.size}:${total}:${snapshot.index}`;
+  if (markerKey !== renderedMarkerKey) {
+    renderedMarkerKey = markerKey;
+    const markerCount = Math.min(total, 200);
+    timelineMarks.replaceChildren(...Array.from({ length: markerCount }, (_, markerIndex) => {
+      const index = Math.min(total - 1, Math.floor(((markerIndex + 1) * total) / markerCount) - 1);
+      const step = snapshot.steps[index];
+      const mark = document.createElement('span');
+      mark.className = `timeline-mark${index < snapshot.index ? ' is-complete' : ''}`;
+      mark.style.left = `${((index + 1) / Math.max(1, total)) * 100}%`;
+      if (step) mark.title = formatMove(step.move, snapshot.size);
+      return mark;
+    }));
+  }
   stepBack.disabled = Boolean(snapshot.active) || snapshot.index === 0;
   stepForward.disabled = Boolean(snapshot.active) || snapshot.index >= total;
   scrubber.disabled = Boolean(snapshot.active) || snapshot.queued > 0 || total === 0;
@@ -319,7 +389,6 @@ controller.subscribe((snapshot) => {
   sizeInput.disabled = Boolean(snapshot.active) || snapshot.queued > 0;
   scramble.disabled = Boolean(snapshot.active) || snapshot.queued > 0;
   solve.disabled = !solverReady.has(snapshot.size) || Boolean(activeSolve) || Boolean(snapshot.active) || snapshot.queued > 0;
-  activeTrace.classList.toggle('is-active', Boolean(snapshot.active));
   status.textContent = snapshot.active
     ? `${snapshot.playing || snapshot.active.direction !== 'forward' ? 'TURNING' : 'PAUSED'} ${formatMove(snapshot.active.move, snapshot.size)} · ${Math.round(snapshot.active.progress * 100)}%`
     : snapshot.queued
